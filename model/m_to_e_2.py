@@ -22,18 +22,32 @@ class MatrixSet(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         return torch.flatten(torch.tensor(self.data[idx], dtype=torch.float32))
 
-class MtoE(torch.nn.Module):
+class MtoE2(torch.nn.Module):
     def __init__(self):
-        super(MtoE, self).__init__()
+        super(MtoE2, self).__init__()
 
-        self.encoder = torch.nn.Linear(9, 3)
-        self.decoder = torch.nn.Linear(3, 9)
-        self.optimizer = torch.optim.SGD(self.parameters(), lr=0.001, momentum=0.9)
+        self.encode = torch.nn.Sequential(
+            torch.nn.Linear(9, 6),
+            torch.nn.BatchNorm1d(6),
+            torch.nn.ReLU(),
+            torch.nn.Linear(6, 3),
+            torch.nn.BatchNorm1d(3),
+            torch.nn.ReLU()
+        )
+
+        self.decode = torch.nn.Sequential(
+            torch.nn.Linear(3, 6),
+            torch.nn.BatchNorm1d(6),
+            torch.nn.ReLU(),
+            torch.nn.Linear(6, 9)
+        )
+
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=0.001)
+        self.lossfunc = torch.nn.MSELoss()
 
     def forward(self, x):
-        x = self.encoder(x)
-        # x = self.wrap_tensor_angles(x)
-        x = self.decoder(x)
+        x = self.encode(x)
+        x = self.decode(x)
         return x
 
     # Computes the angle of rotation between two rotation matrices.
@@ -123,7 +137,7 @@ class MtoE(torch.nn.Module):
                 # print(f'outputs: {outputs}')
 
                 # calculate loss and gradients
-                loss = self.frobenius_loss(data.reshape(data.size(0), 3, 3), outputs.reshape(outputs.size(0), 3, 3))
+                loss = self.lossfunc(data.reshape(data.size(0), 3, 3), outputs.reshape(outputs.size(0), 3, 3))
                 loss.backward()
 
                 # adjust learning weights
@@ -146,25 +160,23 @@ class MtoE(torch.nn.Module):
 
             R_tensor = torch.tensor(R, dtype=torch.float32).unsqueeze(0)
             print(f'initial value: {R_tensor}')
-            encoded = self.encoder(torch.flatten(R_tensor))
+            encoded = self.encode(torch.flatten(R_tensor).unsqueeze(0))
             print(f'encoded value: {encoded}')
-            decoded = self.decoder(encoded).reshape(3,3)
+            decoded = self.decode(encoded).reshape(3,3)
             print(f'decoded value: {decoded}')
 
-            print(f'loss: {self.angular_loss(R_tensor, decoded)}')
-
     def save(self):
-        path = './trained_models/MtoE'
+        path = './trained_models/MtoE2'
         os.makedirs(os.path.dirname(path), exist_ok=True)
         torch.save(self.state_dict(), f'{path}')
 
     @classmethod
     def load(cls):
         print("loading model...")
-        path = './trained_models/MtoE'
-        model = MtoE()
+        path = './trained_models/MtoE2'
+        model = MtoE2()
         try:
             model.load_state_dict(torch.load(path))
         except:
-            print(f'No trained model found with the name "MtoE". Creating a new model')
+            print(f'No trained model found with the name "MtoE2". Creating a new model')
         return model
