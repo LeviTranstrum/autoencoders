@@ -1,3 +1,4 @@
+import math
 import torch
 import os
 import json
@@ -27,26 +28,28 @@ class MtoE3(torch.nn.Module):
         super(MtoE3, self).__init__()
         self.encode = torch.nn.Sequential(
             torch.nn.Linear(9, 7),
+            torch.nn.ReLU(),
             torch.nn.BatchNorm1d(7),
-            torch.nn.ReLU(),
+
             torch.nn.Linear(7, 5),
-            torch.nn.BatchNorm1d(5),
             torch.nn.ReLU(),
+            torch.nn.BatchNorm1d(5),
+
             torch.nn.Linear(5, 3),
+            torch.nn.ReLU(),
             torch.nn.BatchNorm1d(3),
-            torch.nn.ReLU()
         )
+
         self.decode = torch.nn.Sequential(
             torch.nn.Linear(3, 5),
+            torch.nn.ReLU(),
             torch.nn.BatchNorm1d(5),
-            torch.nn.ReLU(),
             torch.nn.Linear(5, 7),
-            torch.nn.BatchNorm1d(7),
             torch.nn.ReLU(),
+            torch.nn.BatchNorm1d(7),
             torch.nn.Linear(7, 9),
         )
         self.optimizer = torch.optim.Adam(self.parameters(), lr=0.001)
-        self.lossfunc = torch.nn.MSELoss()
 
     def forward(self, x):
         x = self.encode(x)
@@ -116,6 +119,51 @@ class MtoE3(torch.nn.Module):
         loss = torch.norm(R_hat - R, p='fro')
         return loss
 
+    def vector_magnitude_penalty(self, vector):
+        return torch.sum((vector.norm() - 1) ** 2)
+
+    def orthogonality_penalty(self, vector1, vector2):
+        return torch.sum(vector1 * vector2, dim=1) ** 2
+
+    def alignment_penalty(self, vec1, vec2):
+        # Compute the dot product
+        dot_product = torch.sum(vec1 * vec2, dim=1)
+
+        # Compute the cosine of the angle
+        cos_theta = dot_product / (vec1.norm() * vec2.norm())
+        cos_theta = torch.clamp(cos_theta, 1, 1)
+
+        # Compute the angle in radians
+        return torch.acos(cos_theta).sum()
+
+    def compound_loss(self, R, R_hat):
+        R_hat_basis_x = R_hat[:,0]
+        R_hat_basis_y = R_hat[:,1]
+        R_hat_basis_z = R_hat[:,2]
+
+        # penalize non-unit-length basis vectors
+        length_loss = (
+            self.vector_magnitude_penalty(R_hat_basis_x) +
+            self.vector_magnitude_penalty(R_hat_basis_y) +
+            self.vector_magnitude_penalty(R_hat_basis_z)
+        )
+
+        # penalize non-orthogonal matrices
+        orthogonality_loss = (
+            self.orthogonality_penalty(R_hat_basis_x, R_hat_basis_y) +
+            self.orthogonality_penalty(R_hat_basis_y, R_hat_basis_z) +
+            self.orthogonality_penalty(R_hat_basis_z, R_hat_basis_x)
+        )
+
+        # penalize misaligment from original transform
+        alignment_loss = (
+            self.alignment_penalty(R_hat_basis_x, R[:,0]) +
+            self.alignment_penalty(R_hat_basis_y, R[:,1]) +
+            self.alignment_penalty(R_hat_basis_z, R[:,2])
+        )
+
+        return length_loss + orthogonality_loss + alignment_loss
+
     def wrap_tensor_angles(self, t):
         return torch.remainder(t, 2 * torch.pi)
 
@@ -140,7 +188,7 @@ class MtoE3(torch.nn.Module):
                 # print(f'outputs: {outputs}')
 
                 # calculate loss and gradients
-                loss = self.lossfunc(data.reshape(data.size(0), 3, 3), outputs.reshape(outputs.size(0), 3, 3))
+                loss = self.compound_loss(data.reshape(data.size(0), 3, 3), outputs.reshape(outputs.size(0), 3, 3))
                 loss.backward()
 
                 # adjust learning weights
